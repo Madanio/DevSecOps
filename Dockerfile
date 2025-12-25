@@ -6,7 +6,7 @@ RUN useradd -m appuser
 WORKDIR /app
 
 # Copy requirements and install
-COPY api/requirements.txt .
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy the rest of the application

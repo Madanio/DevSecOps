@@ -6,6 +6,8 @@ import os
 import ast
 from werkzeug.utils import secure_filename
 
+import bcrypt
+
 app = Flask(__name__)
 
 # Use environment variable for secret key, with a fallback for local dev
@@ -23,14 +25,18 @@ def login():
     # FIX: Parameterized query to prevent SQL Injection
     conn = sqlite3.connect("users.db")
     cursor = conn.cursor()
-    query = "SELECT username FROM users WHERE username=? AND password=?"
-    cursor.execute(query, (username, password))
+    # Note: In a real app, you would fetch the hashed password for the username
+    query = "SELECT password FROM users WHERE username=?"
+    cursor.execute(query, (username,))
 
     result = cursor.fetchone()
     conn.close()
 
     if result:
-        return {"status": "success", "user": username}
+        hashed_password = result[0].encode('utf-8')
+        if bcrypt.checkpw(password.encode('utf-8'), hashed_password):
+            return {"status": "success", "user": username}
+    
     return {"status": "error", "message": "Invalid credentials"}, 401
 
 @app.route("/ping", methods=["POST"])
@@ -38,13 +44,11 @@ def ping():
     host = request.json.get("host", "")
     
     # FIX: Basic validation/sanitization to prevent command injection
-    # In a real app, you'd use a regex for IP/Hostname validation
     if not host or any(char in host for char in [';', '&', '|', '$', '>', '<', '`']):
         return {"error": "Invalid host format"}, 400
 
     # FIX: avoid shell=True and use a list of arguments
     try:
-        # Limit to 1 ping
         result = subprocess.run(["ping", "-c", "1", host], capture_output=True, text=True, timeout=5)
         return {"output": result.stdout}
     except subprocess.TimeoutExpired:
@@ -56,16 +60,9 @@ def ping():
 def compute():
     expression = request.json.get("expression", "1+1")
     try:
-        # FIX: eval is dangerous. ast.literal_eval is safer but only for literals.
-        # For a calculator, we should use a dedicated library or a restricted parser.
-        # Here we use literal_eval for simple types, or just return an error for complex ones.
-        # For demonstration purposes, let's just allow simple arithmetic if safe.
-        # Note: literal_eval doesn't support 1+1, it supports [1, 2, 3] or "string".
-        # We'll just perform a very basic check here.
         if len(expression) > 20 or any(c not in "0123456789+-*/() " for c in expression):
              return {"error": "Expression too complex or invalid"}, 400
         
-        # Still eval, but with restricted globals/locals and character check above
         result = eval(expression, {"__builtins__": {}}, {}) 
         return {"result": result}
     except Exception as e:
@@ -74,9 +71,10 @@ def compute():
 @app.route("/hash", methods=["POST"])
 def hash_password():
     pwd = request.json.get("password", "admin")
-    # FIX: MD5 is weak. Using SHA-256 (though bcrypt is better for passwords)
-    hashed = hashlib.sha256(pwd.encode()).hexdigest()
-    return {"sha256": hashed}
+    # FIX: Using bcrypt for secure password hashing
+    salt = bcrypt.gensalt()
+    hashed = bcrypt.hashpw(pwd.encode('utf-8'), salt)
+    return {"bcrypt": hashed.decode('utf-8')}
 
 @app.route("/readfile", methods=["POST"])
 def readfile():
