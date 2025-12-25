@@ -1,6 +1,20 @@
-FROM python:3.9
+FROM python:3.9-slim
+
+# Create a non-root user
+RUN useradd -m appuser
+
 WORKDIR /app
-COPY ../api .
-RUN pip install flask
+
+# Copy requirements and install
+COPY api/requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+# Copy the rest of the application
+COPY api/ .
+
+# Switch to the non-root user
+USER appuser
+
 EXPOSE 5000
+
 CMD ["python", "app.py"]

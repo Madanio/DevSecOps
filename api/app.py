@@ -1,59 +1,117 @@
-from flask import Flask, request
+from flask import Flask, request, abort
 import sqlite3
 import subprocess
 import hashlib
 import os
+import ast
+from werkzeug.utils import secure_filename
+
 app = Flask(__name__)
-SECRET_KEY = "dev-secret-key-12345" # Hardcoded secret
+
+# Use environment variable for secret key, with a fallback for local dev
+SECRET_KEY = os.environ.get("FLASK_SECRET_KEY", "default-dev-key-change-me")
+
 @app.route("/login", methods=["POST"])
 def login():
-    username = request.json.get("username")
-    password = request.json.get("password")
+    data = request.json
+    if not data:
+        return {"status": "error", "message": "Missing JSON data"}, 400
+    
+    username = data.get("username")
+    password = data.get("password")
 
+    # FIX: Parameterized query to prevent SQL Injection
     conn = sqlite3.connect("users.db")
     cursor = conn.cursor()
-
-    query = f"SELECT * FROM users WHERE username='{username}' AND password='{password}'"
-    cursor.execute(query)
+    query = "SELECT username FROM users WHERE username=? AND password=?"
+    cursor.execute(query, (username, password))
 
     result = cursor.fetchone()
+    conn.close()
+
     if result:
         return {"status": "success", "user": username}
-    return {"status": "error", "message": "Invalid credentials"}
+    return {"status": "error", "message": "Invalid credentials"}, 401
+
 @app.route("/ping", methods=["POST"])
 def ping():
     host = request.json.get("host", "")
-    cmd = f"ping -c 1 {host}"
-    output = subprocess.check_output(cmd, shell=True)
+    
+    # FIX: Basic validation/sanitization to prevent command injection
+    # In a real app, you'd use a regex for IP/Hostname validation
+    if not host or any(char in host for char in [';', '&', '|', '$', '>', '<', '`']):
+        return {"error": "Invalid host format"}, 400
 
-    return {"output": output.decode()}
+    # FIX: avoid shell=True and use a list of arguments
+    try:
+        # Limit to 1 ping
+        result = subprocess.run(["ping", "-c", "1", host], capture_output=True, text=True, timeout=5)
+        return {"output": result.stdout}
+    except subprocess.TimeoutExpired:
+        return {"error": "Ping timed out"}, 504
+    except Exception as e:
+        return {"error": str(e)}, 500
+
 @app.route("/compute", methods=["POST"])
 def compute():
     expression = request.json.get("expression", "1+1")
-    result = eval(expression) # CRITIQUE
-    return {"result": result}
+    try:
+        # FIX: eval is dangerous. ast.literal_eval is safer but only for literals.
+        # For a calculator, we should use a dedicated library or a restricted parser.
+        # Here we use literal_eval for simple types, or just return an error for complex ones.
+        # For demonstration purposes, let's just allow simple arithmetic if safe.
+        # Note: literal_eval doesn't support 1+1, it supports [1, 2, 3] or "string".
+        # We'll just perform a very basic check here.
+        if len(expression) > 20 or any(c not in "0123456789+-*/() " for c in expression):
+             return {"error": "Expression too complex or invalid"}, 400
+        
+        # Still eval, but with restricted globals/locals and character check above
+        result = eval(expression, {"__builtins__": {}}, {}) 
+        return {"result": result}
+    except Exception as e:
+        return {"error": "Invalid expression"}, 400
+
 @app.route("/hash", methods=["POST"])
 def hash_password():
     pwd = request.json.get("password", "admin")
-    hashed = hashlib.md5(pwd.encode()).hexdigest()
-    return {"md5": hashed}
+    # FIX: MD5 is weak. Using SHA-256 (though bcrypt is better for passwords)
+    hashed = hashlib.sha256(pwd.encode()).hexdigest()
+    return {"sha256": hashed}
+
 @app.route("/readfile", methods=["POST"])
 def readfile():
-    filename = request.json.get("filename", "test.txt")
-    with open(filename, "r") as f:
-        content = f.read()
+    filename = request.json.get("filename", "")
+    if not filename:
+        return {"error": "Filename required"}, 400
 
-    return {"content": content}
+    # FIX: Prevent Path Traversal
+    safe_filename = secure_filename(filename)
+    # Ensure file is in a specific data directory if needed, or just current dir but safe
+    # Here we just use the current directory but ensure it's just the filename
+    base_dir = os.getcwd()
+    file_path = os.path.join(base_dir, safe_filename)
+
+    if not os.path.exists(file_path):
+         return {"error": "File not found"}, 404
+
+    try:
+        with open(file_path, "r") as f:
+            content = f.read()
+        return {"content": content}
+    except Exception as e:
+        return {"error": str(e)}, 500
+
 @app.route("/debug", methods=["GET"])
 def debug():
-    # Renvoie des détails sensibles -> mauvaise pratique
+    # FIX: Do not leak secrets or environment variables
     return {
-        "debug": True,
-        "secret_key": SECRET_KEY,
-        "environment": dict(os.environ)
+        "status": "Running",
+        "mode": "production" if os.environ.get("FLASK_ENV") == "production" else "development"
     }
+
 @app.route("/hello", methods=["GET"])
 def hello():
-    return {"message": "Welcome to the DevSecOps vulnerable API"}
+    return {"message": "Welcome to the DevSecOps secured API"}
+
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000)
